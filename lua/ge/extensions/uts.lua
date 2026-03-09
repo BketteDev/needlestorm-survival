@@ -197,6 +197,8 @@ local function getVehicleRuntime(objID, now)
       lastConfig = 0,
       lastTriggerAt = 0,
       lastTriggerPoint = nil,
+      stuckSince = 0,
+      lastKickAt = 0,
       lastSeen = now
     }
     state.vehicleRuntime[objID] = runtime
@@ -338,15 +340,11 @@ local function applyVehicleEffects(obj, runtime, now, playerPos)
   local speedCapMs = state.triggerSpeedCapKmh / 3.6
   local boostMs = state.triggerBoostKmh / 3.6
 
-  -- Configuration IA légère: on laisse l'IA piloter, on ajoute seulement les boosts type trigger.
+  -- Ne pas forcer le mode IA ici: la logique police/poursuite doit rester prioritaire.
   if now - runtime.lastConfig > 0.5 then
     local cmd = string.format([[
       if ai then
-        ai.setMode('traffic')
-        ai.driveInLane('off')
         ai.setAggression(%f)
-        ai.limitSpeedForCurves = false
-        ai.lookAheadVehicles = false
       end
     ]], clamp(state.aggression, 0.5, 10.0))
     obj:queueLuaCommand(cmd)
@@ -370,12 +368,36 @@ local function applyVehicleEffects(obj, runtime, now, playerPos)
     local zoneDist = getDistanceBetween(playerPos, pos)
     if zoneDist > state.boostZoneRadiusM then
       runtime.lastTriggerPoint = copyVec3(triggerPoint)
+      runtime.stuckSince = 0
+      return
+    end
+  end
+
+  -- Anti-blocage: si le véhicule reste quasi immobile, on déclenche un boost direct.
+  if currentSpeedMs < 0.7 then
+    if runtime.stuckSince <= 0 then runtime.stuckSince = now end
+  else
+    runtime.stuckSince = 0
+  end
+
+  if runtime.stuckSince > 0 and (now - runtime.stuckSince) > 0.45 then
+    if (now - runtime.lastKickAt) > 0.35 and (now - runtime.lastTriggerAt) >= state.triggerCooldownS and currentSpeedMs < speedCapMs then
+      runtime.lastKickAt = now
+      runtime.lastTriggerAt = now
+      runtime.lastTriggerPoint = copyVec3(triggerPoint)
+      queueAutobahnBoost(obj, speedCapMs, boostMs)
+      registerBoostHit()
       return
     end
   end
 
   if not runtime.lastTriggerPoint then
     runtime.lastTriggerPoint = copyVec3(triggerPoint)
+    if currentSpeedMs < speedCapMs * 0.5 and (now - runtime.lastTriggerAt) >= state.triggerCooldownS then
+      runtime.lastTriggerAt = now
+      queueAutobahnBoost(obj, speedCapMs, boostMs)
+      registerBoostHit()
+    end
     return
   end
 
