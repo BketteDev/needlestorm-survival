@@ -26,6 +26,10 @@ local state = {
   triggerSpacingM = 66.0,       -- Densité proche de la map Autobahn (environ 60-70m)
   triggerForwardOffsetM = 0.0,  -- Décalage trigger devant le PNJ
   triggerCooldownS = 0.05,
+  unlimitedBoostZone = true,
+  boostZoneRadiusM = 5000.0,
+  pursuitMode = 3,
+  pursuitRefreshS = 0.8,
   criticalDamage = 0.7,
   stopTimeoutS = 10.0,
   stoppedSpeedThresholdKmh = 2.0,
@@ -40,6 +44,8 @@ local state = {
   playerStoppedSince = 0,
   playerStoppedTime = 0,
   stopTimeoutTriggered = false,
+  forcePursuitSetup = false,
+  lastPursuitRefresh = 0,
   vehicleRuntime = {}
 }
 
@@ -55,6 +61,8 @@ local function initUiPointers()
   ui.triggerSpacingM = imgui.FloatPtr(state.triggerSpacingM)
   ui.triggerForwardOffsetM = imgui.FloatPtr(state.triggerForwardOffsetM)
   ui.triggerCooldownS = imgui.FloatPtr(state.triggerCooldownS)
+  ui.unlimitedBoostZone = imgui.BoolPtr(state.unlimitedBoostZone)
+  ui.boostZoneRadiusM = imgui.FloatPtr(state.boostZoneRadiusM)
 end
 
 -- ---------------------------------------------------------
@@ -229,8 +237,78 @@ local function resetRunState(now)
   state.playerStoppedSince = 0
   state.playerStoppedTime = 0
   state.stopTimeoutTriggered = false
+  state.forcePursuitSetup = true
+  state.lastPursuitRefresh = 0
   state.lastBoostStatTime = t
   state.vehicleRuntime = {}
+end
+
+local function collectPoliceTrafficIds(playerID)
+  local policeIds = {}
+  if not gameplay_traffic or not gameplay_traffic.getTrafficData then
+    return policeIds
+  end
+
+  local trafficData = gameplay_traffic.getTrafficData()
+  for id, vehData in pairs(trafficData) do
+    if id ~= playerID and vehData then
+      if vehData.roleName ~= 'police' then
+        pcall(function() vehData:setRole('police') end)
+      end
+      table.insert(policeIds, id)
+    end
+  end
+
+  return policeIds
+end
+
+local function ensurePolicePursuit(now, playerID)
+  if not gameplay_police or not gameplay_police.setupPursuitGameplay or not gameplay_police.setPursuitMode then
+    return
+  end
+  if not playerID or playerID <= 0 then
+    return
+  end
+
+  if not state.forcePursuitSetup and (now - state.lastPursuitRefresh) < state.pursuitRefreshS then
+    return
+  end
+
+  local policeIds = collectPoliceTrafficIds(playerID)
+  if not policeIds[1] then return end
+
+  pcall(function()
+    gameplay_police.setupPursuitGameplay(playerID, policeIds, {
+      playerId = playerID,
+      pursuitMode = state.pursuitMode,
+      preventAutoStart = true
+    })
+    gameplay_police.setPursuitMode(state.pursuitMode, playerID, policeIds)
+  end)
+
+  state.lastPursuitRefresh = now
+  state.forcePursuitSetup = false
+end
+
+local function spawnPoliceTrafficGroup()
+  if not gameplay_traffic or not gameplay_traffic.setupTraffic then
+    return false
+  end
+
+  local options = {
+    policeAmount = state.targetCount,
+    activeAmount = state.targetCount
+  }
+
+  local ok, res = pcall(function()
+    return gameplay_traffic.setupTraffic(state.targetCount, 1.0, options)
+  end)
+  if not ok or res == false then
+    return false
+  end
+
+  state.forcePursuitSetup = true
+  return true
 end
 
 -- ---------------------------------------------------------
@@ -252,7 +330,7 @@ local function queueAutobahnBoost(obj, speedCapMs, boostMs)
   obj:queueLuaCommand(cmd)
 end
 
-local function applyVehicleEffects(obj, runtime, now)
+local function applyVehicleEffects(obj, runtime, now, playerPos)
   if not obj then return end
 
   local speedVec = obj:getVelocity() or vec3(0, 0, 0)
@@ -287,6 +365,15 @@ local function applyVehicleEffects(obj, runtime, now)
     pos.z + forward.z * state.triggerForwardOffsetM
   )
 
+  if not state.unlimitedBoostZone then
+    if not playerPos then return end
+    local zoneDist = getDistanceBetween(playerPos, pos)
+    if zoneDist > state.boostZoneRadiusM then
+      runtime.lastTriggerPoint = copyVec3(triggerPoint)
+      return
+    end
+  end
+
   if not runtime.lastTriggerPoint then
     runtime.lastTriggerPoint = copyVec3(triggerPoint)
     return
@@ -310,8 +397,11 @@ end
 local function hijackAllTraffic()
   local playerVeh = getUTSPlayerVehicle()
   local playerID = playerVeh and playerVeh:getID() or -1
+  local playerPos = getSafePosition(playerVeh)
   local objCount = getObjectCount()
   local now = os.clock()
+
+  ensurePolicePursuit(now, playerID)
 
   local hijackedCount = 0
   local activeIDs = {}
@@ -322,7 +412,7 @@ local function hijackAllTraffic()
       local objID = obj:getID()
       activeIDs[objID] = true
       local runtime = getVehicleRuntime(objID, now)
-      applyVehicleEffects(obj, runtime, now)
+      applyVehicleEffects(obj, runtime, now, playerPos)
       hijackedCount = hijackedCount + 1
     end
   end
@@ -405,13 +495,13 @@ local function renderGui()
     if imgui.Button("DIAGNOSTICS (CONSOLE)", imgui.ImVec2(-1, 20)) then dumpVehicleMethods() end
 
     if not state.running then
-      if imgui.Button("SPAWN TRAFFIC (AI)", imgui.ImVec2(-1, 25)) then
-        if gameplay_traffic then gameplay_traffic.setupTraffic(state.targetCount) end
+      if imgui.Button("SPAWN POLICE CHASERS", imgui.ImVec2(-1, 25)) then
+        spawnPoliceTrafficGroup()
       end
     end
 
     imgui.Separator()
-    imgui.Text("Dynamic Trigger Mode (Autobahn):")
+    imgui.Text("Police Chase + Dynamic Trigger Boost:")
     if not ui.targetCount then initUiPointers() end
     if ui.targetCount then
       if imgui.Button("BASE PRESET (20 km/h trigger)", imgui.ImVec2(-1, 24)) then
@@ -421,12 +511,17 @@ local function renderGui()
         state.triggerSpacingM = 66.0
         state.triggerForwardOffsetM = 0.0
         state.triggerCooldownS = 0.05
+        state.unlimitedBoostZone = true
+        state.boostZoneRadiusM = 5000.0
         ui.aggression[0] = state.aggression
         ui.triggerSpeedCapKmh[0] = state.triggerSpeedCapKmh
         ui.triggerBoostKmh[0] = state.triggerBoostKmh
         ui.triggerSpacingM[0] = state.triggerSpacingM
         ui.triggerForwardOffsetM[0] = state.triggerForwardOffsetM
         ui.triggerCooldownS[0] = state.triggerCooldownS
+        ui.unlimitedBoostZone[0] = state.unlimitedBoostZone
+        ui.boostZoneRadiusM[0] = state.boostZoneRadiusM
+        state.forcePursuitSetup = true
       end
 
       if imgui.SliderInt("Vehicle Count", ui.targetCount, 1, 60) then state.targetCount = ui.targetCount[0] end
@@ -436,6 +531,17 @@ local function renderGui()
       if imgui.SliderFloat("Trigger Spacing (m)", ui.triggerSpacingM, 15.0, 180.0) then state.triggerSpacingM = ui.triggerSpacingM[0] end
       if imgui.SliderFloat("Trigger Forward Offset (m)", ui.triggerForwardOffsetM, -20.0, 120.0) then state.triggerForwardOffsetM = ui.triggerForwardOffsetM[0] end
       if imgui.SliderFloat("Trigger Cooldown (s)", ui.triggerCooldownS, 0.01, 0.8) then state.triggerCooldownS = ui.triggerCooldownS[0] end
+
+      if imgui.Checkbox("Unlimited Boost Zone (recommended)", ui.unlimitedBoostZone) then
+        state.unlimitedBoostZone = ui.unlimitedBoostZone[0]
+      end
+      if not state.unlimitedBoostZone then
+        if imgui.SliderFloat("Boost Zone Radius (m)", ui.boostZoneRadiusM, 30.0, 10000.0) then
+          state.boostZoneRadiusM = ui.boostZoneRadiusM[0]
+        end
+      else
+        imgui.Text("Boost zone is disabled: boosts can trigger anywhere.")
+      end
     end
 
     imgui.Separator()
@@ -475,9 +581,17 @@ end
 
 local function onUpdate(dt)
   state.updateCounter = state.updateCounter + 1
-  if not state.running then return end
 
   local now = os.clock()
+  local pVeh = getUTSPlayerVehicle()
+  local playerID = pVeh and pVeh:getID() or (be and be.getPlayerVehicleID and be:getPlayerVehicleID(0) or 0)
+
+  if state.forcePursuitSetup then
+    ensurePolicePursuit(now, playerID)
+  end
+
+  if not state.running then return end
+
   state.score = now - state.startTime
 
   local ok, err = pcall(hijackAllTraffic, dt)
@@ -485,7 +599,6 @@ local function onUpdate(dt)
     logMsg('E', "Erreur dans hijackAllTraffic : " .. tostring(err))
   end
 
-  local pVeh = getUTSPlayerVehicle()
   if pVeh then
     local vel = pVeh:getVelocity() or vec3(0, 0, 0)
     local speedKmh = vel:length() * 3.6
