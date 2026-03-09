@@ -21,7 +21,7 @@ local state = {
   -- Paramètres gameplay
   targetCount = 10,
   aggression = 2.2,
-  triggerSpeedCapKmh = 72.0,    -- 20 m/s
+  triggerSpeedCapKmh = 20.0,    -- 20 km/h
   triggerBoostKmh = 432.0,      -- Exact mod Autobahn: applyVelocity(direction * 120 m/s)
   triggerSpacingM = 66.0,       -- Densité proche de la map Autobahn (environ 60-70m)
   triggerForwardOffsetM = 0.0,  -- Décalage trigger devant le PNJ
@@ -359,7 +359,7 @@ local function renderHudOverlay()
     imgui.SetWindowFontScale(2.3)
     imgui.Text(string.format("SCORE %.1fs", state.score))
 
-    local stopText = string.format("ARRET %.1fs / %.0fs", state.playerStoppedTime, state.stopTimeoutS)
+    local stopText = string.format("STOPPED %.1fs / %.0fs", state.playerStoppedTime, state.stopTimeoutS)
     if state.playerStoppedTime >= state.stopTimeoutS * 0.7 then
       imgui.TextColored(imgui.ImVec4(1, 0.3, 0.25, 1), stopText)
     else
@@ -367,7 +367,7 @@ local function renderHudOverlay()
     end
 
     if state.stopTimeoutTriggered then
-      imgui.TextColored(imgui.ImVec4(1, 0.1, 0.1, 1), "GAME OVER - IMMOBILE > 10s")
+      imgui.TextColored(imgui.ImVec4(1, 0.1, 0.1, 1), "GAME OVER - STOPPED > 10s")
     end
     imgui.SetWindowFontScale(1.0)
   end
@@ -388,9 +388,9 @@ local function renderGui()
 
     imgui.TextColored(imgui.ImVec4(1, 1, 0, 1), "=== NEEDLESTORM SURVIVAL ===")
     imgui.Text("Score: " .. string.format("%.1f", state.score) .. "s")
-    imgui.Text("Vehicules boostes: " .. state.debugVehCount)
+    imgui.Text("Boosted vehicles: " .. state.debugVehCount)
     imgui.Text("Boosts/s: " .. state.boostPerSecond .. " | Total: " .. state.totalBoostCount)
-    imgui.Text(string.format("Arret joueur: %.1fs / %.0fs", state.playerStoppedTime, state.stopTimeoutS))
+    imgui.Text(string.format("Player stop time: %.1fs / %.0fs", state.playerStoppedTime, state.stopTimeoutS))
 
     imgui.Separator()
 
@@ -401,22 +401,22 @@ local function renderGui()
       end
     end
 
-    if imgui.Button("NETTOYAGE TOTAL", imgui.ImVec2(-1, 25)) then cleanupAllTraffic() end
-    if imgui.Button("DIAGNOSTIC (CONSOLE)", imgui.ImVec2(-1, 20)) then dumpVehicleMethods() end
+    if imgui.Button("CLEAR ALL TRAFFIC", imgui.ImVec2(-1, 25)) then cleanupAllTraffic() end
+    if imgui.Button("DIAGNOSTICS (CONSOLE)", imgui.ImVec2(-1, 20)) then dumpVehicleMethods() end
 
     if not state.running then
-      if imgui.Button("SPAWN TRAFFIC (IA)", imgui.ImVec2(-1, 25)) then
+      if imgui.Button("SPAWN TRAFFIC (AI)", imgui.ImVec2(-1, 25)) then
         if gameplay_traffic then gameplay_traffic.setupTraffic(state.targetCount) end
       end
     end
 
     imgui.Separator()
-    imgui.Text("Mode Trigger Dynamique (Autobahn):")
+    imgui.Text("Dynamic Trigger Mode (Autobahn):")
     if not ui.targetCount then initUiPointers() end
     if ui.targetCount then
-      if imgui.Button("PRESET TRIGGER (20 m/s)", imgui.ImVec2(-1, 24)) then
+      if imgui.Button("BASE PRESET (20 km/h trigger)", imgui.ImVec2(-1, 24)) then
         state.aggression = 2.2
-        state.triggerSpeedCapKmh = 72.0
+        state.triggerSpeedCapKmh = 20.0
         state.triggerBoostKmh = 432.0
         state.triggerSpacingM = 66.0
         state.triggerForwardOffsetM = 0.0
@@ -429,32 +429,17 @@ local function renderGui()
         ui.triggerCooldownS[0] = state.triggerCooldownS
       end
 
-      if imgui.Button("PRESET EXTREME", imgui.ImVec2(-1, 24)) then
-        state.aggression = 5.0
-        state.triggerSpeedCapKmh = 260.0
-        state.triggerBoostKmh = 780.0
-        state.triggerSpacingM = 40.0
-        state.triggerForwardOffsetM = 10.0
-        state.triggerCooldownS = 0.02
-        ui.aggression[0] = state.aggression
-        ui.triggerSpeedCapKmh[0] = state.triggerSpeedCapKmh
-        ui.triggerBoostKmh[0] = state.triggerBoostKmh
-        ui.triggerSpacingM[0] = state.triggerSpacingM
-        ui.triggerForwardOffsetM[0] = state.triggerForwardOffsetM
-        ui.triggerCooldownS[0] = state.triggerCooldownS
-      end
-
-      if imgui.SliderInt("Nb Vehicules", ui.targetCount, 1, 60) then state.targetCount = ui.targetCount[0] end
-      if imgui.SliderFloat("Agressivite IA", ui.aggression, 0.5, 10.0) then state.aggression = ui.aggression[0] end
-      if imgui.SliderFloat("Seuil Boost (km/h)", ui.triggerSpeedCapKmh, 20.0, 400.0) then state.triggerSpeedCapKmh = ui.triggerSpeedCapKmh[0] end
-      if imgui.SliderFloat("Vitesse Boost (km/h)", ui.triggerBoostKmh, 120.0, 1400.0) then state.triggerBoostKmh = ui.triggerBoostKmh[0] end
-      if imgui.SliderFloat("Espacement Trigger (m)", ui.triggerSpacingM, 15.0, 180.0) then state.triggerSpacingM = ui.triggerSpacingM[0] end
-      if imgui.SliderFloat("Offset Trigger Avant (m)", ui.triggerForwardOffsetM, -20.0, 120.0) then state.triggerForwardOffsetM = ui.triggerForwardOffsetM[0] end
-      if imgui.SliderFloat("Cooldown Trigger (s)", ui.triggerCooldownS, 0.01, 0.8) then state.triggerCooldownS = ui.triggerCooldownS[0] end
+      if imgui.SliderInt("Vehicle Count", ui.targetCount, 1, 60) then state.targetCount = ui.targetCount[0] end
+      if imgui.SliderFloat("AI Aggression", ui.aggression, 0.5, 10.0) then state.aggression = ui.aggression[0] end
+      if imgui.SliderFloat("Boost Threshold (km/h)", ui.triggerSpeedCapKmh, 5.0, 400.0) then state.triggerSpeedCapKmh = ui.triggerSpeedCapKmh[0] end
+      if imgui.SliderFloat("Boost Speed (km/h)", ui.triggerBoostKmh, 120.0, 1400.0) then state.triggerBoostKmh = ui.triggerBoostKmh[0] end
+      if imgui.SliderFloat("Trigger Spacing (m)", ui.triggerSpacingM, 15.0, 180.0) then state.triggerSpacingM = ui.triggerSpacingM[0] end
+      if imgui.SliderFloat("Trigger Forward Offset (m)", ui.triggerForwardOffsetM, -20.0, 120.0) then state.triggerForwardOffsetM = ui.triggerForwardOffsetM[0] end
+      if imgui.SliderFloat("Trigger Cooldown (s)", ui.triggerCooldownS, 0.01, 0.8) then state.triggerCooldownS = ui.triggerCooldownS[0] end
     end
 
     imgui.Separator()
-    imgui.TextColored(imgui.ImVec4(0, 1, 1, 1), "INFO TRAFIC:")
+    imgui.TextColored(imgui.ImVec4(0, 1, 1, 1), "TRAFFIC INFO:")
 
     local stopped = 0
     local moving = 0
@@ -476,10 +461,10 @@ local function renderGui()
       end
     end
 
-    imgui.Text("Vehicules detectes : " .. (moving + stopped))
-    imgui.Text("A l'arret : " .. stopped .. " | En mouvement : " .. moving)
+    imgui.Text("Detected vehicles: " .. (moving + stopped))
+    imgui.Text("Stopped: " .. stopped .. " | Moving: " .. moving)
 
-    if imgui.Button("FERMER MENU", imgui.ImVec2(-1, 20)) then state.visible = false end
+    if imgui.Button("CLOSE MENU", imgui.ImVec2(-1, 20)) then state.visible = false end
   end
   imgui.End()
 end
